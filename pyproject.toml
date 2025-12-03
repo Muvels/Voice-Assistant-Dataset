@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=70.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "omni-qwen"
 version = "0.1.0"
@@ -8,12 +12,31 @@ dependencies = [
     "datasets>=3.0.0",
     "pyarrow>=14.0.0",
     "pandas>=2.0.0",
-    "torch>=2.0.0",
     "tqdm>=4.65.0",
-    "huggingface-hub>=0.20.0",
-]
-
-[project.optional-dependencies]
-dia2 = [
+    "huggingface-hub>=0.24.7",
+    # Dia2 dependencies
+    "torch>=2.8.0",
+    "numpy>=2.1.0,<3.0",
+    "transformers>=4.55.3",
+    "safetensors==0.5.3",
+    "sphn>=0.2.0",
+    "soundfile>=0.12.1",
+    "whisper-timestamped>=1.14.2",
+    "gradio>=4.44.1",
+    # Local dia2 package
     "dia2",
 ]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+dia2 = { path = "./dia2", editable = true }
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
