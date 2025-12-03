@@ -1,5 +1,5 @@
 """
-Omni-Qwen: Process VoiceAssistant-400K with Dia2-1B
+Omni-Qwen: Process VoiceAssistant-400K with Kyutai TTS
 
 Main entry point - redirects to the processing script.
 """

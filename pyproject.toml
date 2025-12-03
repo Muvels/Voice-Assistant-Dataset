@@ -1,11 +1,7 @@
-[build-system]
-requires = ["setuptools>=70.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "omni-qwen"
 version = "0.1.0"
-description = "Process VoiceAssistant-400K dataset with Dia2-1B to generate Mimi tokens"
+description = "Process VoiceAssistant-400K dataset with Kyutai TTS to generate Mimi tokens"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,28 +10,18 @@ dependencies = [
     "pandas>=2.0.0",
     "tqdm>=4.65.0",
     "huggingface-hub>=0.24.7",
-    # Dia2 dependencies
-    "torch>=2.8.0",
+    # Kyutai TTS dependencies
+    "torch>=2.0.0",
     "numpy>=2.1.0,<3.0",
-    "transformers>=4.55.3",
-    "safetensors==0.5.3",
-    "sphn>=0.2.0",
-    "soundfile>=0.12.1",
-    "whisper-timestamped>=1.14.2",
-    "gradio>=4.44.1",
-    # Local dia2 package
-    "dia2",
+    "safetensors<0.6",
+    "sphn<0.2",
+    "moshi==0.2.11",
 ]
 
-[tool.setuptools]
-py-modules = []  # No Python modules to install from this project
-packages = []    # No packages to install from this project
-
 [tool.uv]
-package = false  # This is a script project, not a package
+package = false
 
 [tool.uv.sources]
-dia2 = { path = "./dia2", editable = true }
 torch = [
   { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]

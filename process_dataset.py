@@ -1,9 +1,9 @@
 """
-Process VoiceAssistant-400K dataset with Dia2-1B to generate Mimi tokens.
+Process VoiceAssistant-400K dataset with Kyutai TTS to generate Mimi tokens.
 
 This script:
 1. Downloads the VoiceAssistant-400K dataset from HuggingFace
-2. Loads the Dia2-1B model
+2. Loads the Kyutai TTS model (kyutai/tts-1.6b-en_fr)
 3. For each row, generates Mimi tokens from the "answer" text
 4. Stores tokens in "answer_mimi" column (replacing "answer_snac")
 5. Saves back to parquet files
@@ -12,33 +12,33 @@ This script:
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from dia2 import Dia2
-
+import numpy as np
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
-from datasets import load_dataset
+import torch
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
 
-# Dia2 imports - will be available after installing the dia2 package
-DIA2_AVAILABLE = False
-DIA2_IMPORT_ERROR = None
+if TYPE_CHECKING:
+    from moshi.models.tts import TTSModel
+
+# Moshi/Kyutai TTS imports
+MOSHI_AVAILABLE = False
+MOSHI_IMPORT_ERROR = None
 
 try:
-    from dia2 import Dia2, GenerationConfig, SamplingConfig
-    DIA2_AVAILABLE = True
+    from moshi.models.loaders import CheckpointInfo
+    from moshi.models.tts import DEFAULT_DSM_TTS_REPO, DEFAULT_DSM_TTS_VOICE_REPO, TTSModel
+    MOSHI_AVAILABLE = True
 except ImportError as e:
-    DIA2_IMPORT_ERROR = str(e)
-    print(f"Warning: dia2 package not available. Error: {e}")
+    MOSHI_IMPORT_ERROR = str(e)
+    print(f"Warning: moshi package not available. Error: {e}")
 except Exception as e:
-    DIA2_IMPORT_ERROR = str(e)
-    print(f"Warning: Failed to import dia2. Error: {e}")
+    MOSHI_IMPORT_ERROR = str(e)
+    print(f"Warning: Failed to import moshi. Error: {e}")
 
 
 def download_dataset(output_dir: str, num_files: int | None = None) -> list[Path]:
@@ -75,85 +75,109 @@ def download_dataset(output_dir: str, num_files: int | None = None) -> list[Path
     return parquet_files
 
 
-def load_dia2_model(device: str = "cuda", dtype: str = "bfloat16") -> "Dia2":
+def load_tts_model(
+    device: str = "cuda",
+    n_q: int = 32,
+    temp: float = 0.6,
+) -> "TTSModel":
     """
-    Load the Dia2-1B model from HuggingFace.
+    Load the Kyutai TTS model from HuggingFace.
     
-    The model weights will be automatically downloaded from HuggingFace
-    on first use via Dia2.from_repo().
+    Uses kyutai/tts-1.6b-en_fr model with Mimi codec.
+    Model weights are automatically downloaded on first use.
     
     Args:
         device: Device to load model on ("cuda" or "cpu")
-        dtype: Data type for model weights
+        n_q: Number of quantizers (audio tokens per frame, max 32)
+        temp: Sampling temperature
     
     Returns:
-        Loaded Dia2 model
+        Loaded TTSModel
     """
-    if not DIA2_AVAILABLE:
-        error_msg = f"Import error: {DIA2_IMPORT_ERROR}" if DIA2_IMPORT_ERROR else "Unknown import error"
+    if not MOSHI_AVAILABLE:
+        error_msg = f"Import error: {MOSHI_IMPORT_ERROR}" if MOSHI_IMPORT_ERROR else "Unknown import error"
         raise ImportError(
-            f"dia2 package is not available. {error_msg}\n"
-            "Make sure dia2 is in your project and run: uv sync"
+            f"moshi package is not available. {error_msg}\n"
+            "Install it with: pip install 'moshi==0.2.11'"
         )
     
-    print(f"Loading Dia2-1B model on {device} with {dtype}...")
+    print(f"Loading Kyutai TTS model on {device}...")
+    print(f"  Model: {DEFAULT_DSM_TTS_REPO}")
+    print(f"  Voices: {DEFAULT_DSM_TTS_VOICE_REPO}")
     print("(Model weights will be downloaded from HuggingFace if not cached)")
-    model = Dia2.from_repo("nari-labs/Dia2-1B", device=device, dtype=dtype)
+    
+    checkpoint_info = CheckpointInfo.from_hf_repo(DEFAULT_DSM_TTS_REPO)
+    tts_model = TTSModel.from_checkpoint_info(
+        checkpoint_info,
+        n_q=n_q,
+        temp=temp,
+        device=torch.device(device),
+    )
+    
     print("Model loaded successfully!")
-    return model
+    return tts_model
 
 
 def generate_mimi_tokens(
-    model: "Dia2",
+    model: "TTSModel",
     text: str,
-    cfg_scale: float = 2.0,
-    temperature: float = 0.8,
-    top_k: int = 50,
-    use_cuda_graph: bool = True,
-) -> list[int]:
+    voice: str = "expresso/ex03-ex01_happy_001_channel1_334s.wav",
+    cfg_coef: float = 2.0,
+) -> list[list[int]]:
     """
-    Generate Mimi tokens from text using Dia2-1B.
+    Generate Mimi tokens from text using Kyutai TTS.
     
     Args:
-        model: Loaded Dia2 model
+        model: Loaded TTSModel
         text: Input text to convert to speech tokens
-        cfg_scale: Classifier-free guidance scale
-        temperature: Sampling temperature
-        top_k: Top-k sampling parameter
-        use_cuda_graph: Whether to use CUDA graphs for acceleration
+        voice: Voice identifier from tts-voices repository
+        cfg_coef: CFG coefficient for generation
     
     Returns:
-        List of Mimi audio tokens
+        List of Mimi audio token frames (each frame is a list of tokens)
     """
-    # Prepare text with speaker tag if not present
-    if not text.startswith("[S1]") and not text.startswith("[S2]"):
-        text = f"[S1] {text}"
+    # Prepare the script entries
+    entries = model.prepare_script([text], padding_between=1)
     
-    config = GenerationConfig(
-        cfg_scale=cfg_scale,
-        audio=SamplingConfig(temperature=temperature, top_k=top_k),
-        use_cuda_graph=use_cuda_graph,
-    )
+    # Get voice conditioning
+    voice_path = model.get_voice_path(voice)
+    condition_attributes = model.make_condition_attributes([voice_path], cfg_coef=cfg_coef)
     
-    # Generate - we only want the audio tokens, not the waveform
-    result = model.generate(text, config=config, verbose=False)
+    # Collect Mimi tokens during generation
+    mimi_tokens = []
     
-    # Extract audio tokens from result
-    # The result contains audio_tokens which are the Mimi codec tokens
-    audio_tokens = result.audio_tokens
+    def on_frame(frame):
+        """Callback to collect Mimi tokens from each generated frame."""
+        if (frame != -1).all():
+            # frame shape: [batch, n_q+1, time]
+            # We take [:, 1:, :] to get the audio tokens (excluding semantic token at index 0)
+            tokens = frame[:, 1:, :].cpu().numpy()
+            mimi_tokens.append(tokens[0].tolist())  # [n_q, time] for this frame
     
-    # Convert to list if it's a tensor
-    if hasattr(audio_tokens, "tolist"):
-        audio_tokens = audio_tokens.tolist()
+    # Generate with streaming to collect tokens
+    all_entries = [entries]
+    all_condition_attributes = [condition_attributes]
     
-    return audio_tokens
+    with model.mimi.streaming(len(all_entries)):
+        model.generate(all_entries, all_condition_attributes, on_frame=on_frame)
+    
+    # Flatten tokens: each entry in mimi_tokens is [n_q, 1] for one timestep
+    # We want to return as a list of token lists, one per codebook
+    if not mimi_tokens:
+        return []
+    
+    # Stack all frames: [num_frames, n_q, 1] -> [n_q, num_frames]
+    stacked = np.concatenate(mimi_tokens, axis=-1)  # [n_q, total_time]
+    
+    # Return as list of lists (one list per codebook)
+    return stacked.tolist()
 
 
 def process_parquet_file(
     input_path: Path,
     output_path: Path,
-    model: "Dia2" | None = None,
-    batch_size: int = 1,
+    model: "TTSModel" | None = None,
+    voice: str = "expresso/ex03-ex01_happy_001_channel1_334s.wav",
 ) -> None:
     """
     Process a single parquet file, generating Mimi tokens for each answer.
@@ -161,8 +185,8 @@ def process_parquet_file(
     Args:
         input_path: Path to input parquet file
         output_path: Path to save processed parquet file
-        model: Loaded Dia2 model (if None, will skip token generation)
-        batch_size: Number of rows to process at once
+        model: Loaded TTSModel (if None, will skip token generation)
+        voice: Voice to use for TTS
     """
     print(f"\nProcessing: {input_path.name}")
     
@@ -175,7 +199,7 @@ def process_parquet_file(
     
     # Check if 'answer' column exists
     if "answer" not in df.columns:
-        print(f"  Warning: 'answer' column not found, skipping file")
+        print("  Warning: 'answer' column not found, skipping file")
         return
     
     # Generate Mimi tokens for each answer
@@ -190,7 +214,7 @@ def process_parquet_file(
                 continue
             
             try:
-                tokens = generate_mimi_tokens(model, answer_text)
+                tokens = generate_mimi_tokens(model, answer_text, voice=voice)
                 mimi_tokens_list.append(tokens)
             except Exception as e:
                 print(f"  Error processing row {idx}: {e}")
@@ -216,7 +240,7 @@ def process_parquet_file(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Process VoiceAssistant-400K dataset with Dia2-1B"
+        description="Process VoiceAssistant-400K dataset with Kyutai TTS"
     )
     parser.add_argument(
         "--data-dir",
@@ -244,13 +268,6 @@ def main():
         help="Device to run model on",
     )
     parser.add_argument(
-        "--dtype",
-        type=str,
-        default="bfloat16",
-        choices=["bfloat16", "float16", "float32"],
-        help="Data type for model weights",
-    )
-    parser.add_argument(
         "--skip-download",
         action="store_true",
         help="Skip downloading dataset (use existing files)",
@@ -261,15 +278,21 @@ def main():
         help="Process files without generating tokens (for testing)",
     )
     parser.add_argument(
-        "--cfg-scale",
-        type=float,
-        default=2.0,
-        help="Classifier-free guidance scale",
+        "--voice",
+        type=str,
+        default="expresso/ex03-ex01_happy_001_channel1_334s.wav",
+        help="Voice to use for TTS generation",
     )
     parser.add_argument(
-        "--temperature",
+        "--n-q",
+        type=int,
+        default=32,
+        help="Number of quantizers (audio tokens per frame, 1-32)",
+    )
+    parser.add_argument(
+        "--temp",
         type=float,
-        default=0.8,
+        default=0.6,
         help="Sampling temperature",
     )
     
@@ -296,7 +319,11 @@ def main():
     model = None
     if not args.dry_run:
         try:
-            model = load_dia2_model(device=args.device, dtype=args.dtype)
+            model = load_tts_model(
+                device=args.device,
+                n_q=args.n_q,
+                temp=args.temp,
+            )
         except ImportError as e:
             print(f"Cannot load model: {e}")
             print("Running in dry-run mode instead...")
@@ -310,6 +337,7 @@ def main():
             input_path=parquet_file,
             output_path=output_file,
             model=model,
+            voice=args.voice,
         )
     
     print("\n" + "=" * 50)
@@ -319,5 +347,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
