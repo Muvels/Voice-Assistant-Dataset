@@ -27,8 +27,12 @@ dependencies = [
     "dia2",
 ]
 
+[tool.setuptools]
+py-modules = []  # No Python modules to install from this project
+packages = []    # No packages to install from this project
+
 [tool.uv]
-package = true
+package = false  # This is a script project, not a package
 
 [tool.uv.sources]
 dia2 = { path = "./dia2", editable = true }
