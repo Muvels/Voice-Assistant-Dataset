@@ -1,0 +1,19 @@
+[project]
+name = "omni-qwen"
+version = "0.1.0"
+description = "Process VoiceAssistant-400K dataset with Dia2-1B to generate Mimi tokens"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=3.0.0",
+    "pyarrow>=14.0.0",
+    "pandas>=2.0.0",
+    "torch>=2.0.0",
+    "tqdm>=4.65.0",
+    "huggingface-hub>=0.20.0",
+]
+
+[project.optional-dependencies]
+dia2 = [
+    "dia2",
+]
