@@ -27,12 +27,18 @@ from huggingface_hub import snapshot_download
 from tqdm import tqdm
 
 # Dia2 imports - will be available after installing the dia2 package
+DIA2_AVAILABLE = False
+DIA2_IMPORT_ERROR = None
+
 try:
     from dia2 import Dia2, GenerationConfig, SamplingConfig
     DIA2_AVAILABLE = True
-except ImportError:
-    DIA2_AVAILABLE = False
-    print("Warning: dia2 package not installed. Install it to enable token generation.")
+except ImportError as e:
+    DIA2_IMPORT_ERROR = str(e)
+    print(f"Warning: dia2 package not available. Error: {e}")
+except Exception as e:
+    DIA2_IMPORT_ERROR = str(e)
+    print(f"Warning: Failed to import dia2. Error: {e}")
 
 
 def download_dataset(output_dir: str, num_files: int | None = None) -> list[Path]:
@@ -73,6 +79,9 @@ def load_dia2_model(device: str = "cuda", dtype: str = "bfloat16") -> "Dia2":
     """
     Load the Dia2-1B model from HuggingFace.
     
+    The model weights will be automatically downloaded from HuggingFace
+    on first use via Dia2.from_repo().
+    
     Args:
         device: Device to load model on ("cuda" or "cpu")
         dtype: Data type for model weights
@@ -81,13 +90,14 @@ def load_dia2_model(device: str = "cuda", dtype: str = "bfloat16") -> "Dia2":
         Loaded Dia2 model
     """
     if not DIA2_AVAILABLE:
+        error_msg = f"Import error: {DIA2_IMPORT_ERROR}" if DIA2_IMPORT_ERROR else "Unknown import error"
         raise ImportError(
-            "dia2 package is not installed. "
-            "Clone the Dia2 repo and install it: "
-            "git clone https://huggingface.co/nari-labs/Dia2-1B && cd Dia2-1B && uv sync"
+            f"dia2 package is not available. {error_msg}\n"
+            "Make sure dia2 is in your project and run: uv sync"
         )
     
     print(f"Loading Dia2-1B model on {device} with {dtype}...")
+    print("(Model weights will be downloaded from HuggingFace if not cached)")
     model = Dia2.from_repo("nari-labs/Dia2-1B", device=device, dtype=dtype)
     print("Model loaded successfully!")
     return model
