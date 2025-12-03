@@ -9,10 +9,15 @@ This script:
 5. Saves back to parquet files
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dia2 import Dia2
 
 import pandas as pd
 import pyarrow as pa
