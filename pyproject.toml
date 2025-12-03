@@ -10,9 +10,13 @@ dependencies = [
     "pandas>=2.0.0",
     "tqdm>=4.65.0",
     "huggingface-hub>=0.24.7",
-    # Kyutai TTS dependencies
+    # Audio processing
     "torch>=2.0.0",
     "numpy>=2.1.0,<3.0",
+    "soundfile>=0.12.1",
+    # SNAC codec for decoding answer_snac
+    "snac",
+    # Kyutai TTS (Moshi) for encoding to Mimi tokens
     "safetensors<0.6",
     "sphn<0.2",
     "moshi==0.2.11",

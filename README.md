@@ -1,21 +1,25 @@
 # Omni-Qwen: VoiceAssistant Dataset Processor
 
-Process the [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) dataset with [Kyutai TTS](https://huggingface.co/kyutai/tts-1.6b-en_fr) to generate Mimi audio tokens.
+Process the [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) dataset to convert between audio codecs (SNAC → Audio → Mimi).
 
 ## Overview
 
-This tool:
-1. Downloads the VoiceAssistant-400K dataset (parquet files)
-2. Loads the Kyutai TTS model (1.6B parameters, uses Mimi codec)
-3. For each row, generates Mimi tokens from the "answer" text column
-4. Stores tokens in a new "answer_mimi" column (replacing "answer_snac")
-5. Saves the processed data back to parquet files
+Two processing pipelines:
+
+### 1. SNAC → Audio (`process_snac_to_mimi.py`)
+- Decodes `answer_snac` tokens to audio waveforms
+- Stores audio in `answer_audio` column
+- Uses [SNAC codec](https://github.com/hubertsiuzdak/snac) (24kHz)
+
+### 2. Text → Mimi (`process_dataset.py`)
+- Generates speech from `answer` text using [Kyutai TTS](https://huggingface.co/kyutai/tts-1.6b-en_fr)
+- Stores Mimi tokens in `answer_mimi` column (replacing `answer_snac`)
 
 ## Requirements
 
 - Python 3.12+
 - CUDA (for GPU acceleration)
-- [uv](https://github.com/astral-sh/uv) package manager (recommended)
+- [uv](https://github.com/astral-sh/uv) package manager
 
 ## Installation
 
@@ -23,90 +27,87 @@ This tool:
 uv sync
 ```
 
-This will install all dependencies including:
-- `moshi==0.2.11` - Kyutai's TTS package with Mimi codec
-- `torch` - PyTorch (CUDA version on Linux)
-- `datasets`, `pyarrow`, `pandas` - Data processing
+This installs:
+- `snac` - SNAC audio codec for decoding
+- `moshi==0.2.11` - Kyutai's TTS with Mimi codec
+- `torch`, `soundfile`, `pandas`, `pyarrow` - Processing tools
 
 ## Usage
 
-### Full processing
+### Step 1: SNAC to Audio
 
-Process all parquet files from the dataset:
+First, decode the existing SNAC tokens to audio:
 
 ```bash
-uv run python process_dataset.py --data-dir ./data
+# Inspect the SNAC data format first
+uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1 --inspect-only
+
+# Process SNAC → Audio (stores in answer_audio column)
+uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1
+
+# Also save audio as .wav files
+uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1 --save-audio-files
 ```
 
-### Testing with a few files
+### Step 2: Text to Mimi (alternative)
 
-Process only the first N files (useful for testing):
+Generate Mimi tokens from text using Kyutai TTS:
 
 ```bash
 uv run python process_dataset.py --data-dir ./data --num-files 1
 ```
 
-### Dry run (no token generation)
-
-Test the pipeline without loading the model:
+### All Options
 
 ```bash
-uv run python process_dataset.py --data-dir ./data --dry-run --num-files 1
-```
+# SNAC → Audio
+uv run python process_snac_to_mimi.py --help
 
-### Use existing downloaded files
-
-Skip the download step if you already have the dataset:
-
-```bash
-uv run python process_dataset.py --data-dir ./data --skip-download
-```
-
-### All options
-
-```bash
+# Text → Mimi  
 uv run python process_dataset.py --help
 ```
 
-Options:
-- `--data-dir`: Directory to store downloaded data (default: `./data`)
-- `--output-dir`: Directory for processed files (default: `data-dir/processed`)
-- `--num-files`: Limit number of files to process
-- `--device`: Device to run model on (`cuda` or `cpu`)
-- `--skip-download`: Use existing downloaded files
-- `--dry-run`: Process without generating tokens
-- `--voice`: Voice from [tts-voices repo](https://huggingface.co/kyutai/tts-voices) (default: `expresso/ex03-ex01_happy_001_channel1_334s.wav`)
-- `--n-q`: Number of quantizers/codebooks (1-32, default: 32)
-- `--temp`: Sampling temperature (default: 0.6)
+Common options:
+- `--data-dir`: Directory for data (default: `./data`)
+- `--output-dir`: Output directory (default: `data-dir/processed`)
+- `--num-files`: Limit files to process
+- `--device`: `cuda` or `cpu`
+- `--skip-download`: Use existing files
+- `--dry-run`: Test without processing
 
 ## Output
 
-Processed parquet files are saved to `<data-dir>/processed/` with the same filenames as the originals.
+### From `process_snac_to_mimi.py`:
+- `answer_audio`: Audio waveform as bytes (float32)
+- Optional `.wav` files in `--audio-dir`
 
-Each file will have:
-- All original columns preserved
-- New `answer_mimi` column containing Mimi audio tokens (list of 32 codebook sequences)
-- `answer_snac` column removed (if it existed)
-
-## Model Information
-
-The Kyutai TTS model ([kyutai/tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr)):
-- 1.8B parameters (1B backbone + 600M depth transformer)
-- Streaming text-to-speech
-- Uses Mimi codec at 12.5 Hz frame rate
-- 32 audio tokens per frame
-- Supports English and French
-- Voice conditioning via pre-computed embeddings
+### From `process_dataset.py`:
+- `answer_mimi`: Mimi codec tokens (32 codebook sequences)
+- Removes `answer_snac` column
 
 ## Dataset Information
 
-The VoiceAssistant-400K dataset contains:
+[VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K):
 - 325 parquet files (~219GB total)
-- ~400K voice assistant conversation samples
+- ~470K voice assistant samples
 - Columns: `split_name`, `index`, `round`, `question`, `question_audio`, `answer`, `answer_snac`
+
+## Models
+
+### SNAC (hubertsiuzdak/snac_24khz)
+- Multi-Scale Neural Audio Codec
+- 24kHz sample rate
+- Used in the original dataset
+
+### Kyutai TTS (kyutai/tts-1.6b-en_fr)
+- 1.8B parameter streaming TTS
+- Uses Mimi codec at 12.5 Hz
+- 32 audio tokens per frame
+- English and French
 
 ## License
 
 - Code: Apache 2.0
-- Kyutai TTS model: CC-BY 4.0
-- VoiceAssistant-400K dataset: Apache 2.0
+- SNAC: MIT
+- Kyutai TTS: CC-BY 4.0
+- VoiceAssistant-400K: Apache 2.0
