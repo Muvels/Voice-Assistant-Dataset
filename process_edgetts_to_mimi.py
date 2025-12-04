@@ -161,23 +161,16 @@ def encode_audio_to_mimi(
 async def _edge_tts_synthesize_async(
     text: str,
     voice: str = "en-US-JennyNeural",
-    output_format: str = "riff-24khz-16bit-mono-pcm",
 ) -> bytes:
     """
-    Synthesize speech from text using Edge TTS and return WAV/PCM bytes.
-
-    The default `output_format` produces a 24kHz mono PCM RIFF (WAV) file.
+    Synthesize speech from text using Edge TTS and return raw audio bytes.
     """
     if not EDGE_TTS_AVAILABLE:
         raise ImportError(
             f"edge-tts package not available. Error: {EDGE_TTS_IMPORT_ERROR}"
         )
 
-    communicate = edge_tts.Communicate(
-        text,
-        voice=voice,
-        output_format=output_format,
-    )
+    communicate = edge_tts.Communicate(text, voice)
 
     audio_bytes = b""
     async for chunk in communicate.stream():
@@ -189,12 +182,11 @@ async def _edge_tts_synthesize_async(
 def edge_tts_synthesize(
     text: str,
     voice: str = "en-US-JennyNeural",
-    output_format: str = "riff-24khz-16bit-mono-pcm",
 ) -> bytes:
     """
     Synchronous wrapper around Edge TTS synthesis.
     """
-    return asyncio.run(_edge_tts_synthesize_async(text, voice=voice, output_format=output_format))
+    return asyncio.run(_edge_tts_synthesize_async(text, voice=voice))
 
 
 def process_parquet_file(
