@@ -277,7 +277,7 @@ def encode_audio_to_mimi(
     mimi_model,
     audio: np.ndarray,
     sample_rate: int = 24000,
-    target_sample_rate: int = 24000,
+    device: str = "cuda",
 ) -> list:
     """
     Encode audio waveform to Mimi tokens.
@@ -286,16 +286,18 @@ def encode_audio_to_mimi(
         mimi_model: Loaded Mimi codec
         audio: Audio waveform as numpy array
         sample_rate: Input sample rate
-        target_sample_rate: Mimi's expected sample rate
+        device: Device to run encoding on
     
     Returns:
         Mimi tokens as list of lists (one per codebook)
     """
+    # Mimi expects 24kHz audio
+    target_sample_rate = mimi_model.sample_rate  # Usually 24000
+    
     # Resample if needed
     if sample_rate != target_sample_rate:
         import torch.nn.functional as F
         audio_tensor = torch.tensor(audio, dtype=torch.float32)
-        # Simple resampling - for production use torchaudio.transforms.Resample
         ratio = target_sample_rate / sample_rate
         new_length = int(len(audio) * ratio)
         audio_tensor = F.interpolate(
@@ -311,7 +313,7 @@ def encode_audio_to_mimi(
     if audio_tensor.dim() == 1:
         audio_tensor = audio_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, samples]
     
-    audio_tensor = audio_tensor.to(mimi_model.device)
+    audio_tensor = audio_tensor.to(device)
     
     # Encode with Mimi
     with torch.no_grad():
@@ -435,7 +437,7 @@ def process_single_file(
             audio_results[idx] = audio_bytes
             
             # Step 2: Audio → Mimi tokens
-            mimi_tokens = encode_audio_to_mimi(mimi_model, audio, sample_rate)
+            mimi_tokens = encode_audio_to_mimi(mimi_model, audio, sample_rate, device)
             mimi_results[idx] = mimi_tokens
             
         except Exception as e:
