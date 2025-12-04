@@ -464,23 +464,14 @@ def process_single_file(
     # Save using HuggingFace datasets library for proper Audio column handling
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    from datasets import Dataset, Audio, Features, Value, Sequence
+    from datasets import Dataset, Audio
     
-    # Define features - answer_audio as Audio type for playback in Data Studio
-    features = Features({
-        'split_name': Value('string'),
-        'index': Value('int64'),
-        'round': Value('int64'),
-        'question': Value('string'),
-        'question_audio': Audio(sampling_rate=24000),
-        'answer': Value('string'),
-        'answer_snac': Value('string'),
-        'answer_audio': Audio(sampling_rate=24000),
-        'answer_mimi': Sequence(Sequence(Value('int64'))),
-    })
+    # Convert DataFrame to HuggingFace Dataset (without strict feature casting)
+    hf_dataset = Dataset.from_pandas(df)
     
-    # Convert DataFrame to HuggingFace Dataset
-    hf_dataset = Dataset.from_pandas(df, features=features)
+    # Cast audio columns to Audio type for playback in Data Studio
+    hf_dataset = hf_dataset.cast_column("question_audio", Audio(sampling_rate=24000))
+    hf_dataset = hf_dataset.cast_column("answer_audio", Audio(sampling_rate=24000))
     
     # Save as parquet with proper audio encoding
     hf_dataset.to_parquet(output_path)
