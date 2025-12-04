@@ -12,6 +12,8 @@ This script:
 from __future__ import annotations
 
 import argparse
+import ast
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -98,9 +100,38 @@ def load_snac_model(device: str = "cuda") -> "SNAC":
     return model
 
 
+def parse_snac_tokens(snac_tokens) -> list:
+    """
+    Parse SNAC tokens from various storage formats.
+    
+    The tokens might be stored as:
+    - A list of lists (already parsed)
+    - A JSON string
+    - A numpy array
+    - A string representation of a list
+    """
+    # If it's a string, try to parse it
+    if isinstance(snac_tokens, str):
+        # Try JSON first
+        try:
+            snac_tokens = json.loads(snac_tokens)
+        except json.JSONDecodeError:
+            # Try ast.literal_eval for Python list syntax
+            try:
+                snac_tokens = ast.literal_eval(snac_tokens)
+            except (ValueError, SyntaxError) as e:
+                raise ValueError(f"Cannot parse SNAC tokens string: {e}")
+    
+    # If it's a numpy array, convert to list
+    if isinstance(snac_tokens, np.ndarray):
+        snac_tokens = snac_tokens.tolist()
+    
+    return snac_tokens
+
+
 def decode_snac_to_audio(
     snac_model: "SNAC",
-    snac_tokens: list,
+    snac_tokens,
     device: str = "cuda",
 ) -> np.ndarray:
     """
@@ -108,36 +139,46 @@ def decode_snac_to_audio(
     
     Args:
         snac_model: Loaded SNAC model
-        snac_tokens: SNAC token data (format depends on how it's stored)
+        snac_tokens: SNAC token data (can be list, string, or numpy array)
         device: Device to run on
     
     Returns:
         Audio waveform as numpy array
     """
-    # SNAC tokens are typically stored as a list of lists (one per layer)
-    # or as a flat list that needs to be reshaped
+    # Parse tokens if they're stored as strings
+    snac_tokens = parse_snac_tokens(snac_tokens)
     
-    # Convert to tensor
-    if isinstance(snac_tokens, list):
-        # Try to determine the format
-        if len(snac_tokens) > 0 and isinstance(snac_tokens[0], list):
-            # Already structured as layers
-            codes = [torch.tensor(layer, dtype=torch.long, device=device).unsqueeze(0) 
-                     for layer in snac_tokens]
-        else:
-            # Flat list - need to understand the structure
-            # SNAC 24kHz typically has 3 layers with different lengths
-            # This is a common format: interleaved tokens
-            codes = torch.tensor(snac_tokens, dtype=torch.long, device=device)
-            
-            # If it's a 2D array already
-            if codes.dim() == 2:
-                codes = [codes[i:i+1, :] for i in range(codes.shape[0])]
-            else:
-                # Assume it's already properly formatted
-                codes = [codes.unsqueeze(0)]
+    # SNAC 24kHz uses 3 hierarchical layers with different frame rates
+    # The tokens should be a list of 3 lists with different lengths
+    # Layer 0: lowest resolution (longest temporal)
+    # Layer 1: middle resolution
+    # Layer 2: highest resolution (shortest temporal)
+    
+    if not isinstance(snac_tokens, list) or len(snac_tokens) == 0:
+        raise ValueError(f"Invalid SNAC tokens format: {type(snac_tokens)}")
+    
+    # Check if it's already structured as layers
+    if isinstance(snac_tokens[0], list):
+        # Already structured as layers - convert each to tensor
+        codes = []
+        for layer in snac_tokens:
+            layer_tensor = torch.tensor(layer, dtype=torch.long, device=device)
+            # Add batch dimension: [seq_len] -> [1, seq_len]
+            codes.append(layer_tensor.unsqueeze(0))
     else:
-        codes = snac_tokens
+        # Flat list - this might be interleaved tokens
+        # SNAC uses 3 layers with ratios roughly 1:2:4
+        # Try to decode as a single layer first
+        codes_tensor = torch.tensor(snac_tokens, dtype=torch.long, device=device)
+        
+        if codes_tensor.dim() == 1:
+            # Single flat list - wrap as single layer
+            codes = [codes_tensor.unsqueeze(0)]
+        elif codes_tensor.dim() == 2:
+            # 2D array - each row is a layer
+            codes = [codes_tensor[i:i+1, :] for i in range(codes_tensor.shape[0])]
+        else:
+            raise ValueError(f"Unexpected SNAC tensor shape: {codes_tensor.shape}")
     
     with torch.no_grad():
         audio = snac_model.decode(codes)
@@ -168,10 +209,30 @@ def inspect_snac_format(df: pd.DataFrame) -> dict:
     
     info = {
         "sample_index": sample_idx,
-        "type": type(sample).__name__,
+        "raw_type": type(sample).__name__,
     }
     
-    if isinstance(sample, (list, np.ndarray)):
+    # If it's a string, try to parse it
+    if isinstance(sample, str):
+        info["string_length"] = len(sample)
+        info["string_preview"] = sample[:200] + "..." if len(sample) > 200 else sample
+        
+        # Try to parse
+        try:
+            parsed = parse_snac_tokens(sample)
+            info["parsed_type"] = type(parsed).__name__
+            if isinstance(parsed, list):
+                info["parsed_length"] = len(parsed)
+                if len(parsed) > 0:
+                    info["first_elem_type"] = type(parsed[0]).__name__
+                    if isinstance(parsed[0], list):
+                        info["layer_lengths"] = [len(layer) for layer in parsed]
+                    else:
+                        info["sample_values"] = parsed[:20]
+        except Exception as e:
+            info["parse_error"] = str(e)
+    
+    elif isinstance(sample, (list, np.ndarray)):
         info["length"] = len(sample)
         if len(sample) > 0:
             first_elem = sample[0]
@@ -180,10 +241,10 @@ def inspect_snac_format(df: pd.DataFrame) -> dict:
                 info["first_element_length"] = len(first_elem)
                 info["nested"] = True
                 # Check all layer lengths
-                info["layer_lengths"] = [len(layer) for layer in sample[:10]]  # First 10 layers
+                info["layer_lengths"] = [len(layer) for layer in sample[:10]]
             else:
                 info["nested"] = False
-                info["sample_values"] = list(sample[:20])  # First 20 values
+                info["sample_values"] = list(sample[:20])
     elif isinstance(sample, bytes):
         info["byte_length"] = len(sample)
     else:
