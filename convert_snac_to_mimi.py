@@ -26,11 +26,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import io
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
+import wave
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
 
@@ -433,9 +435,18 @@ def process_single_file(
             # Step 1: SNAC → Audio
             audio, sample_rate = decode_snac_to_audio(snac_model, snac_tokens, device)
             
-            # Store audio in HuggingFace Audio format
-            # Format: {"array": numpy_array, "sampling_rate": int}
-            audio_results[idx] = {"array": audio.astype(np.float32), "sampling_rate": sample_rate}
+            # Store audio as WAV bytes (same format as original question_audio)
+            # Convert float32 [-1, 1] to int16 for WAV
+            audio_int16 = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+            
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)  # Mono
+                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(audio_int16.tobytes())
+            
+            audio_results[idx] = {"bytes": wav_buffer.getvalue()}
             
             # Step 2: Audio → Mimi tokens
             mimi_tokens = encode_audio_to_mimi(mimi_model, audio, sample_rate, device)
@@ -461,20 +472,17 @@ def process_single_file(
     df["answer_audio"] = audio_results
     df["answer_mimi"] = mimi_results
     
-    # Save using HuggingFace datasets library for proper Audio column handling
+    # Save as parquet with small row groups for HuggingFace Data Studio
+    # Audio is stored as {"bytes": wav_bytes} matching original question_audio format
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    from datasets import Dataset, Audio
-    
-    # Convert DataFrame to HuggingFace Dataset (without strict feature casting)
-    hf_dataset = Dataset.from_pandas(df)
-    
-    # Cast audio columns to Audio type for playback in Data Studio
-    hf_dataset = hf_dataset.cast_column("question_audio", Audio(sampling_rate=24000))
-    hf_dataset = hf_dataset.cast_column("answer_audio", Audio(sampling_rate=24000))
-    
-    # Save as parquet with proper audio encoding
-    hf_dataset.to_parquet(output_path)
+    table = pa.Table.from_pandas(df)
+    pq.write_table(
+        table,
+        output_path,
+        row_group_size=100,  # Small row groups for Data Studio
+        compression='snappy',
+    )
     print(f"  Saved to: {output_path}")
     
     # Mark complete and save checkpoint
