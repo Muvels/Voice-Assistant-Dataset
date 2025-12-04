@@ -14,7 +14,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from huggingface_hub import HfApi, create_repo, upload_file, upload_folder
+from datasets import Audio, Dataset
+from huggingface_hub import HfApi, create_repo
 
 
 DATASET_CARD = """---
@@ -42,7 +43,7 @@ This dataset is a processed version of [gpt-omni/VoiceAssistant-400K](https://hu
 ## Processing
 
 Each sample has been processed to add:
-- **answer_audio**: Decoded audio waveform from SNAC tokens (float32 bytes, 24kHz)
+- **answer_audio**: Decoded audio waveform from SNAC tokens (24kHz `Audio` feature)
 - **answer_mimi**: Re-encoded audio using [Kyutai's Mimi codec](https://huggingface.co/kyutai/tts-1.6b-en_fr) (32 codebooks)
 
 ## Columns
@@ -53,7 +54,7 @@ Each sample has been processed to add:
 | `index` | int | Sample index |
 | `round` | int | Conversation round |
 | `question` | string | User question text |
-| `question_audio` | bytes | Question audio |
+| `question_audio` | Audio | Question audio (original sample rate) |
 | `answer` | string | Assistant answer text |
 | `answer_snac` | string | Original SNAC tokens |
 | `answer_audio` | Audio | Decoded audio (WAV, 24kHz) - playable in viewer |
@@ -62,8 +63,6 @@ Each sample has been processed to add:
 ## Usage
 
 ```python
-import numpy as np
-import pandas as pd
 from datasets import load_dataset
 
 # Load dataset
@@ -72,13 +71,10 @@ ds = load_dataset("YOUR_USERNAME/voice-assistant-mimi", split="train")
 # Access a sample
 sample = ds[0]
 
-# Audio is stored as WAV - can be played directly in Data Studio
-# To load in Python:
-import soundfile as sf
-import io
-audio_data = sample["answer_audio"]
-audio, sr = sf.read(io.BytesIO(audio_data["bytes"]))
-# sr = 24000 Hz
+# Audio is stored as an Audio feature - can be played directly in Data Studio
+answer_audio = sample["answer_audio"]
+audio_array = answer_audio["array"]        # numpy array, shape (num_samples,)
+sr = answer_audio["sampling_rate"]         # 24000
 
 # Access Mimi tokens
 mimi_tokens = sample["answer_mimi"]  # [32, time_steps]
@@ -102,7 +98,10 @@ def upload_dataset(
     num_files: int | None = None,
 ):
     """
-    Upload converted parquet files to HuggingFace Hub.
+    Upload converted parquet files to HuggingFace Hub as a proper `datasets.Dataset`
+    with all `_audio` columns cast to the `Audio` feature.
+    
+    This makes audio columns playable in the HuggingFace Data Studio viewer.
     
     Args:
         repo_id: HuggingFace repo ID (username/repo-name)
@@ -121,7 +120,25 @@ def upload_dataset(
         print(f"No parquet files found in {data_dir}")
         return
     
-    print(f"Found {len(parquet_files)} parquet files to upload")
+    print(f"Found {len(parquet_files)} parquet files to include in dataset")
+    
+    # Build a single Dataset from all parquet shards
+    print("\nLoading parquet files into a HuggingFace Dataset...")
+    ds = Dataset.from_parquet([str(pf) for pf in parquet_files])
+    print(f"Dataset loaded with {len(ds)} rows and columns: {ds.column_names}")
+    
+    # Cast all *_audio columns to Audio features (option A)
+    audio_columns = [c for c in ds.column_names if c.endswith("_audio")]
+    if not audio_columns:
+        print("Warning: no columns ending with '_audio' found to cast to Audio feature")
+    else:
+        print(f"Casting columns to Audio feature: {audio_columns}")
+        for col in audio_columns:
+            # `answer_audio` is known to be 24 kHz; others keep default behavior
+            if col == "answer_audio":
+                ds = ds.cast_column(col, Audio(sampling_rate=24000))
+            else:
+                ds = ds.cast_column(col, Audio())
     
     # Create repository if it doesn't exist
     print(f"\nCreating/accessing repository: {repo_id}")
@@ -137,7 +154,11 @@ def upload_dataset(
         print(f"Error creating repo: {e}")
         return
     
-    # Upload README
+    # Push dataset (this will upload parquet shards + dataset_infos)
+    print("\nPushing dataset with Audio features to HuggingFace Hub...")
+    ds.push_to_hub(repo_id, private=private)
+    
+    # Upload README (dataset card)
     print("\nUploading dataset card (README.md)...")
     readme_content = DATASET_CARD.replace("YOUR_USERNAME/voice-assistant-mimi", repo_id)
     
@@ -147,18 +168,6 @@ def upload_dataset(
         repo_id=repo_id,
         repo_type="dataset",
     )
-    
-    # Upload parquet files to data/ folder
-    print(f"\nUploading {len(parquet_files)} parquet files...")
-    
-    for i, pf in enumerate(parquet_files):
-        print(f"  [{i+1}/{len(parquet_files)}] Uploading {pf.name}...")
-        api.upload_file(
-            path_or_fileobj=str(pf),
-            path_in_repo=f"data/{pf.name}",
-            repo_id=repo_id,
-            repo_type="dataset",
-        )
     
     print("\n" + "=" * 50)
     print("Upload complete!")
