@@ -147,24 +147,75 @@ def parse_snac_tokens(snac_tokens) -> list:
     Parse SNAC tokens from various storage formats.
     
     The VoiceAssistant-400K dataset stores SNAC tokens as a string with format:
-    "# token1 token2 ... # token1 token2 ... # ..."
+    "# t0_c0 t0_c1 t0_c2 t0_c3 t0_c4 t0_c5 t0_c6 # t1_c0 t1_c1 ..."
     
-    Where # separates different layers/codebooks.
+    Each # separated group has 7 tokens representing one timestep across 7 codebooks.
+    We need to transpose this to get 7 layers (one per codebook).
+    
+    SNAC 24kHz uses 3 hierarchical codebooks but mini-omni flattens to 7 streams:
+    - Codebook 0: 1 token per frame
+    - Codebook 1: 2 tokens per frame  
+    - Codebook 2: 4 tokens per frame
+    Total: 1 + 2 + 4 = 7 tokens per frame
     """
     if isinstance(snac_tokens, str):
         # Check if it's the VoiceAssistant-400K format: "# tokens # tokens # ..."
         if snac_tokens.startswith('#') or ' # ' in snac_tokens:
-            # Split by # and parse each layer
-            layers = []
+            # Split by # and parse each timestep
+            timesteps = []
             parts = snac_tokens.split('#')
             for part in parts:
                 part = part.strip()
                 if part:
-                    # Parse space-separated integers
+                    # Parse space-separated integers for this timestep
                     tokens = [int(t) for t in part.split() if t.strip()]
                     if tokens:
-                        layers.append(tokens)
-            return layers
+                        timesteps.append(tokens)
+            
+            if not timesteps:
+                raise ValueError("No valid timesteps found")
+            
+            # Each timestep should have 7 tokens (for mini-omni's SNAC format)
+            # Transpose: from [num_timesteps, 7] to [7, num_timesteps]
+            num_codebooks = len(timesteps[0])  # Usually 7
+            
+            # Transpose to get layers
+            layers = []
+            for cb_idx in range(num_codebooks):
+                layer = [ts[cb_idx] for ts in timesteps if cb_idx < len(ts)]
+                layers.append(layer)
+            
+            # SNAC expects 3 hierarchical layers with ratios 1:2:4
+            # The 7 streams need to be reorganized:
+            # Layer 0 (1 token/frame): indices 0
+            # Layer 1 (2 tokens/frame): indices 1, 2
+            # Layer 2 (4 tokens/frame): indices 3, 4, 5, 6
+            
+            if num_codebooks == 7:
+                # Reorganize into proper SNAC format
+                n_frames = len(layers[0])
+                
+                # Layer 0: 1 token per frame
+                layer0 = layers[0]
+                
+                # Layer 1: 2 tokens per frame (interleaved from streams 1,2)
+                layer1 = []
+                for i in range(n_frames):
+                    layer1.append(layers[1][i])
+                    layer1.append(layers[2][i])
+                
+                # Layer 2: 4 tokens per frame (interleaved from streams 3,4,5,6)
+                layer2 = []
+                for i in range(n_frames):
+                    layer2.append(layers[3][i])
+                    layer2.append(layers[4][i])
+                    layer2.append(layers[5][i])
+                    layer2.append(layers[6][i])
+                
+                return [layer0, layer1, layer2]
+            else:
+                # Unknown format, return as-is
+                return layers
         
         # Try JSON format
         try:
@@ -453,6 +504,10 @@ def inspect_snac_data(parquet_files: list[Path], num_samples: int = 3):
                     print(f"  Parsed successfully!")
                     print(f"  Number of layers: {len(parsed)}")
                     print(f"  Layer lengths: {[len(layer) for layer in parsed]}")
+                    # SNAC expects ratios 1:2:4
+                    if len(parsed) == 3:
+                        l0, l1, l2 = len(parsed[0]), len(parsed[1]), len(parsed[2])
+                        print(f"  Layer length ratios: 1:{l1//l0 if l0 else 0}:{l2//l0 if l0 else 0} (expected 1:2:4)")
                     print(f"  First layer first 10 tokens: {parsed[0][:10] if parsed else 'empty'}")
                 except Exception as e:
                     print(f"  Parse error: {e}")
