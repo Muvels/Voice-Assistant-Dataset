@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -306,9 +307,12 @@ def process_parquet_file(
             try:
                 audio = decode_snac_to_audio(snac_model, snac_tokens)
                 
-                # Store as bytes (more compact for parquet)
-                audio_bytes = audio.astype(np.float32).tobytes()
-                audio_list.append(audio_bytes)
+                # Encode as WAV bytes for HuggingFace compatibility
+                buffer = io.BytesIO()
+                sf.write(buffer, audio, sample_rate, format='WAV')
+                audio_bytes = buffer.getvalue()
+                # Store in HuggingFace Audio format
+                audio_list.append({"bytes": audio_bytes, "path": None})
                 
                 # Optionally save as wav file
                 if save_audio_files and audio_output_dir:
