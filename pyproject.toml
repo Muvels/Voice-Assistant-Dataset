@@ -16,6 +16,8 @@ dependencies = [
     "soundfile>=0.12.1",
     # SNAC codec for decoding answer_snac
     "snac",
+    # Edge TTS for text-to-speech from answer text
+    "edge-tts",
     # Kyutai TTS (Moshi) for encoding to Mimi tokens
     "safetensors<0.6",
     "sphn<0.2",
