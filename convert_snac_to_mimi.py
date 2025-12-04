@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from huggingface_hub import snapshot_download
@@ -460,9 +461,20 @@ def process_single_file(
     df["answer_audio"] = audio_results
     df["answer_mimi"] = mimi_results
     
-    # Save output file
+    # Save output file with small row groups for HuggingFace Data Studio compatibility
+    # Data Studio has a 300MB scan limit, so we use small row groups (100 rows)
+    # to enable random access without loading entire row groups
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
+    
+    table = pa.Table.from_pandas(df)
+    pq.write_table(
+        table,
+        output_path,
+        row_group_size=100,  # Small row groups for Data Studio
+        compression='snappy',
+        write_statistics=True,
+        write_page_index=True,  # Enable page index for random access
+    )
     print(f"  Saved to: {output_path}")
     
     # Mark complete and save checkpoint
