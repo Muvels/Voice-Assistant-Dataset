@@ -143,11 +143,34 @@ def load_mimi_model(device: str = "cuda"):
 # ============================================================================
 
 def parse_snac_tokens(snac_tokens) -> list:
-    """Parse SNAC tokens from various storage formats (string, list, array)."""
+    """
+    Parse SNAC tokens from various storage formats.
+    
+    The VoiceAssistant-400K dataset stores SNAC tokens as a string with format:
+    "# token1 token2 ... # token1 token2 ... # ..."
+    
+    Where # separates different layers/codebooks.
+    """
     if isinstance(snac_tokens, str):
+        # Check if it's the VoiceAssistant-400K format: "# tokens # tokens # ..."
+        if snac_tokens.startswith('#') or ' # ' in snac_tokens:
+            # Split by # and parse each layer
+            layers = []
+            parts = snac_tokens.split('#')
+            for part in parts:
+                part = part.strip()
+                if part:
+                    # Parse space-separated integers
+                    tokens = [int(t) for t in part.split() if t.strip()]
+                    if tokens:
+                        layers.append(tokens)
+            return layers
+        
+        # Try JSON format
         try:
             snac_tokens = json.loads(snac_tokens)
         except json.JSONDecodeError:
+            # Try Python literal format
             try:
                 snac_tokens = ast.literal_eval(snac_tokens)
             except (ValueError, SyntaxError) as e:
@@ -423,6 +446,17 @@ def inspect_snac_data(parquet_files: list[Path], num_samples: int = 3):
             elif isinstance(val, str):
                 print(f"  String length: {len(val)}")
                 print(f"  First 300 chars: {repr(val[:300])}")
+                
+                # Try to parse and show structure
+                try:
+                    parsed = parse_snac_tokens(val)
+                    print(f"  Parsed successfully!")
+                    print(f"  Number of layers: {len(parsed)}")
+                    print(f"  Layer lengths: {[len(layer) for layer in parsed]}")
+                    print(f"  First layer first 10 tokens: {parsed[0][:10] if parsed else 'empty'}")
+                except Exception as e:
+                    print(f"  Parse error: {e}")
+                    
             elif isinstance(val, bytes):
                 print(f"  Bytes length: {len(val)}")
                 print(f"  First 50 bytes: {val[:50]}")
