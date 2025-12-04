@@ -394,6 +394,50 @@ def process_single_file(
     checkpoint.save(checkpoint_path)
 
 
+def inspect_snac_data(parquet_files: list[Path], num_samples: int = 3):
+    """Inspect the actual format of SNAC data in parquet files."""
+    print("\n" + "=" * 50)
+    print("Inspecting SNAC data format...")
+    print("=" * 50)
+    
+    for pf in parquet_files[:1]:
+        table = pq.read_table(pf)
+        df = table.to_pandas()
+        
+        print(f"\nFile: {pf.name}")
+        print(f"Columns: {list(df.columns)}")
+        
+        if "answer_snac" not in df.columns:
+            print("  No answer_snac column!")
+            continue
+        
+        print(f"\nanswer_snac column dtype: {df['answer_snac'].dtype}")
+        
+        for i in range(min(num_samples, len(df))):
+            val = df["answer_snac"].iloc[i]
+            print(f"\n--- Row {i} ---")
+            print(f"  Python type: {type(val).__name__}")
+            
+            if val is None:
+                print("  Value: None")
+            elif isinstance(val, str):
+                print(f"  String length: {len(val)}")
+                print(f"  First 300 chars: {repr(val[:300])}")
+            elif isinstance(val, bytes):
+                print(f"  Bytes length: {len(val)}")
+                print(f"  First 50 bytes: {val[:50]}")
+            elif isinstance(val, (list, np.ndarray)):
+                print(f"  Length: {len(val)}")
+                if len(val) > 0:
+                    print(f"  First element type: {type(val[0]).__name__}")
+                    if isinstance(val[0], (list, np.ndarray)):
+                        print(f"  Nested structure - layer lengths: {[len(x) for x in val[:5]]}")
+                    else:
+                        print(f"  First 10 values: {list(val[:10])}")
+            else:
+                print(f"  Value: {repr(val)[:200]}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert VoiceAssistant-400K: SNAC → Audio → Mimi tokens"
@@ -450,6 +494,11 @@ def main():
         action="store_true",
         help="Test without loading models",
     )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="Only inspect SNAC data format, don't process",
+    )
     
     args = parser.parse_args()
     
@@ -481,6 +530,11 @@ def main():
     
     if not parquet_files:
         print("No parquet files found!")
+        return
+    
+    # Inspect mode - just show data format
+    if args.inspect:
+        inspect_snac_data(parquet_files)
         return
     
     # Count remaining work

@@ -1,24 +1,21 @@
 # Omni-Qwen: VoiceAssistant Dataset Processor
 
-Process the [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) dataset to convert between audio codecs (SNAC → Audio → Mimi).
+Convert the [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K) dataset between audio codecs (SNAC → Audio → Mimi tokens).
 
 ## Overview
 
-Two processing pipelines:
+**Main Script: `convert_snac_to_mimi.py`**
 
-### 1. SNAC → Audio (`process_snac_to_mimi.py`)
-- Decodes `answer_snac` tokens to audio waveforms
-- Stores audio in `answer_audio` column
-- Uses [SNAC codec](https://github.com/hubertsiuzdak/snac) (24kHz)
-
-### 2. Text → Mimi (`process_dataset.py`)
-- Generates speech from `answer` text using [Kyutai TTS](https://huggingface.co/kyutai/tts-1.6b-en_fr)
-- Stores Mimi tokens in `answer_mimi` column (replacing `answer_snac`)
+Converts each parquet file:
+1. Decodes `answer_snac` → audio waveform (SNAC 24kHz codec)
+2. Encodes audio → `answer_mimi` tokens (Mimi codec from Kyutai)
+3. Saves both `answer_audio` and `answer_mimi` columns
+4. **Resumable** - saves checkpoints to continue after interruption
 
 ## Requirements
 
 - Python 3.12+
-- CUDA (for GPU acceleration)
+- CUDA GPU (recommended)
 - [uv](https://github.com/astral-sh/uv) package manager
 
 ## Installation
@@ -27,87 +24,120 @@ Two processing pipelines:
 uv sync
 ```
 
-This installs:
-- `snac` - SNAC audio codec for decoding
-- `moshi==0.2.11` - Kyutai's TTS with Mimi codec
-- `torch`, `soundfile`, `pandas`, `pyarrow` - Processing tools
+Installs:
+- `snac` - SNAC audio codec (24kHz)
+- `moshi==0.2.11` - Kyutai TTS with Mimi codec
+- `torch`, `soundfile`, `pandas`, `pyarrow`
 
 ## Usage
 
-### Step 1: SNAC to Audio
-
-First, decode the existing SNAC tokens to audio:
+### Basic Conversion
 
 ```bash
-# Inspect the SNAC data format first
-uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1 --inspect-only
+# Process all files
+uv run python convert_snac_to_mimi.py --data-dir ./data
 
-# Process SNAC → Audio (stores in answer_audio column)
-uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1
+# Test with first file only
+uv run python convert_snac_to_mimi.py --data-dir ./data --num-files 1
 
-# Also save audio as .wav files
-uv run python process_snac_to_mimi.py --data-dir ./data --num-files 1 --save-audio-files
+# Skip dataset download (use existing files)
+uv run python convert_snac_to_mimi.py --data-dir ./data --skip-download
 ```
 
-### Step 2: Text to Mimi (alternative)
-
-Generate Mimi tokens from text using Kyutai TTS:
+### Resuming After Interruption
 
 ```bash
-uv run python process_dataset.py --data-dir ./data --num-files 1
+# If the script crashes or is interrupted, resume with:
+uv run python convert_snac_to_mimi.py --data-dir ./data --resume
+
+# Checkpoint is saved every 100 rows (configurable)
+uv run python convert_snac_to_mimi.py --data-dir ./data --save-interval 50
 ```
 
 ### All Options
 
 ```bash
-# SNAC → Audio
-uv run python process_snac_to_mimi.py --help
-
-# Text → Mimi  
-uv run python process_dataset.py --help
+uv run python convert_snac_to_mimi.py --help
 ```
 
-Common options:
-- `--data-dir`: Directory for data (default: `./data`)
-- `--output-dir`: Output directory (default: `data-dir/processed`)
-- `--num-files`: Limit files to process
-- `--device`: `cuda` or `cpu`
-- `--skip-download`: Use existing files
-- `--dry-run`: Test without processing
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--data-dir` | `./data` | Data directory |
+| `--output-dir` | `data-dir/converted` | Output directory |
+| `--num-files` | all | Limit files to process |
+| `--device` | `cuda` | `cuda` or `cpu` |
+| `--skip-download` | false | Use existing files |
+| `--resume` | false | Resume from checkpoint |
+| `--checkpoint-file` | `conversion_checkpoint.pkl` | Checkpoint filename |
+| `--save-interval` | 100 | Checkpoint every N rows |
+| `--dry-run` | false | Test without processing |
 
-## Output
+## Output Format
 
-### From `process_snac_to_mimi.py`:
-- `answer_audio`: Audio waveform as bytes (float32)
-- Optional `.wav` files in `--audio-dir`
+Each processed parquet file contains:
 
-### From `process_dataset.py`:
-- `answer_mimi`: Mimi codec tokens (32 codebook sequences)
-- Removes `answer_snac` column
+| Column | Type | Description |
+|--------|------|-------------|
+| `answer_audio` | bytes | Audio waveform (float32, 24kHz) |
+| `answer_mimi` | list[list[int]] | Mimi tokens (32 codebooks × time) |
+| *(original columns)* | ... | All original data preserved |
 
-## Dataset Information
+### Reading Audio from Parquet
+
+```python
+import numpy as np
+import pandas as pd
+
+df = pd.read_parquet("data/converted/train-00000-of-00325.parquet")
+
+# Convert bytes back to audio
+audio_bytes = df["answer_audio"].iloc[0]
+audio = np.frombuffer(audio_bytes, dtype=np.float32)
+
+# Play or save audio (24kHz sample rate)
+import soundfile as sf
+sf.write("output.wav", audio, 24000)
+```
+
+### Reading Mimi Tokens
+
+```python
+# Mimi tokens: list of 32 lists (one per codebook)
+mimi_tokens = df["answer_mimi"].iloc[0]
+print(f"Codebooks: {len(mimi_tokens)}, Time steps: {len(mimi_tokens[0])}")
+```
+
+## Resumability
+
+The script saves checkpoints to `conversion_checkpoint.pkl`:
+- Tracks completed files
+- Tracks current file and row
+- Saves partial results periodically
+
+If interrupted, use `--resume` to continue from where it stopped.
+
+## Dataset Info
 
 [VoiceAssistant-400K](https://huggingface.co/datasets/gpt-omni/VoiceAssistant-400K):
-- 325 parquet files (~219GB total)
-- ~470K voice assistant samples
-- Columns: `split_name`, `index`, `round`, `question`, `question_audio`, `answer`, `answer_snac`
+- 325 parquet files (~219GB)
+- ~470K samples
+- Original columns: `split_name`, `index`, `round`, `question`, `question_audio`, `answer`, `answer_snac`
 
-## Models
+## Models Used
 
-### SNAC (hubertsiuzdak/snac_24khz)
-- Multi-Scale Neural Audio Codec
-- 24kHz sample rate
-- Used in the original dataset
+| Model | Description |
+|-------|-------------|
+| [hubertsiuzdak/snac_24khz](https://huggingface.co/hubertsiuzdak/snac_24khz) | SNAC decoder (24kHz) |
+| [kyutai/tts-1.6b-en_fr](https://huggingface.co/kyutai/tts-1.6b-en_fr) | Mimi encoder (from Kyutai TTS) |
 
-### Kyutai TTS (kyutai/tts-1.6b-en_fr)
-- 1.8B parameter streaming TTS
-- Uses Mimi codec at 12.5 Hz
-- 32 audio tokens per frame
-- English and French
+## Other Scripts
+
+- `process_snac_to_mimi.py` - SNAC → Audio only
+- `process_dataset.py` - Text → Mimi (TTS generation)
 
 ## License
 
 - Code: Apache 2.0
 - SNAC: MIT
-- Kyutai TTS: CC-BY 4.0
+- Kyutai TTS/Mimi: CC-BY 4.0
 - VoiceAssistant-400K: Apache 2.0
