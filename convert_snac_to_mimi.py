@@ -26,12 +26,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import io
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-import soundfile as sf
 import torch
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -435,11 +433,9 @@ def process_single_file(
             # Step 1: SNAC → Audio
             audio, sample_rate = decode_snac_to_audio(snac_model, snac_tokens, device)
             
-            # Store audio as WAV bytes for HuggingFace Data Studio playback
-            wav_buffer = io.BytesIO()
-            sf.write(wav_buffer, audio, sample_rate, format='WAV', subtype='PCM_16')
-            wav_bytes = wav_buffer.getvalue()
-            audio_results[idx] = {"bytes": wav_bytes}
+            # Store audio in HuggingFace Audio format
+            # Format: {"array": numpy_array, "sampling_rate": int}
+            audio_results[idx] = {"array": audio.astype(np.float32), "sampling_rate": sample_rate}
             
             # Step 2: Audio → Mimi tokens
             mimi_tokens = encode_audio_to_mimi(mimi_model, audio, sample_rate, device)
@@ -465,20 +461,29 @@ def process_single_file(
     df["answer_audio"] = audio_results
     df["answer_mimi"] = mimi_results
     
-    # Save output file with small row groups for HuggingFace Data Studio compatibility
-    # Data Studio has a 300MB scan limit, so we use small row groups (100 rows)
-    # to enable random access without loading entire row groups
+    # Save using HuggingFace datasets library for proper Audio column handling
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    table = pa.Table.from_pandas(df)
-    pq.write_table(
-        table,
-        output_path,
-        row_group_size=100,  # Small row groups for Data Studio
-        compression='snappy',
-        write_statistics=True,
-        write_page_index=True,  # Enable page index for random access
-    )
+    from datasets import Dataset, Audio, Features, Value, Sequence
+    
+    # Define features - answer_audio as Audio type for playback in Data Studio
+    features = Features({
+        'split_name': Value('string'),
+        'index': Value('int64'),
+        'round': Value('int64'),
+        'question': Value('string'),
+        'question_audio': Audio(sampling_rate=24000),
+        'answer': Value('string'),
+        'answer_snac': Value('string'),
+        'answer_audio': Audio(sampling_rate=24000),
+        'answer_mimi': Sequence(Sequence(Value('int64'))),
+    })
+    
+    # Convert DataFrame to HuggingFace Dataset
+    hf_dataset = Dataset.from_pandas(df, features=features)
+    
+    # Save as parquet with proper audio encoding
+    hf_dataset.to_parquet(output_path)
     print(f"  Saved to: {output_path}")
     
     # Mark complete and save checkpoint
