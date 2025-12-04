@@ -56,7 +56,7 @@ Each sample has been processed to add:
 | `question_audio` | bytes | Question audio |
 | `answer` | string | Assistant answer text |
 | `answer_snac` | string | Original SNAC tokens |
-| `answer_audio` | bytes | Decoded audio (float32, 24kHz) |
+| `answer_audio` | Audio | Decoded audio (WAV, 24kHz) - playable in viewer |
 | `answer_mimi` | list[list[int]] | Mimi tokens (32 codebooks × time) |
 
 ## Usage
@@ -72,10 +72,13 @@ ds = load_dataset("YOUR_USERNAME/voice-assistant-mimi", split="train")
 # Access a sample
 sample = ds[0]
 
-# Convert audio bytes back to waveform
-audio_bytes = sample["answer_audio"]
-audio = np.frombuffer(audio_bytes, dtype=np.float32)
-# Sample rate: 24000 Hz
+# Audio is stored as WAV - can be played directly in Data Studio
+# To load in Python:
+import soundfile as sf
+import io
+audio_data = sample["answer_audio"]
+audio, sr = sf.read(io.BytesIO(audio_data["bytes"]))
+# sr = 24000 Hz
 
 # Access Mimi tokens
 mimi_tokens = sample["answer_mimi"]  # [32, time_steps]

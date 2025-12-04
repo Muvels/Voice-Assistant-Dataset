@@ -26,10 +26,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import io
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import soundfile as sf
 import torch
 from huggingface_hub import snapshot_download
 from tqdm import tqdm
@@ -433,9 +435,11 @@ def process_single_file(
             # Step 1: SNAC → Audio
             audio, sample_rate = decode_snac_to_audio(snac_model, snac_tokens, device)
             
-            # Store audio as bytes (float32)
-            audio_bytes = audio.astype(np.float32).tobytes()
-            audio_results[idx] = audio_bytes
+            # Store audio as WAV bytes for HuggingFace Data Studio playback
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, audio, sample_rate, format='WAV', subtype='PCM_16')
+            wav_bytes = wav_buffer.getvalue()
+            audio_results[idx] = {"bytes": wav_bytes}
             
             # Step 2: Audio → Mimi tokens
             mimi_tokens = encode_audio_to_mimi(mimi_model, audio, sample_rate, device)
